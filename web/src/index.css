@@ -1,0 +1,24 @@
+/* claude-room shell — the pixel Room fills the whole viewport. The Room owns
+   its own dark world (room.css); this file only resets the page around it. */
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #05060d;
+  color: #c7cee0;
+  font: 14px/1.4 system-ui, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* .room-pixel is position:absolute/inset:0 — give it a positioned, full-size
+   stage to anchor to. */
+#root {
+  position: relative;
+}

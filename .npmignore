@@ -1,0 +1,8 @@
+# Publish allowlist is the package.json "files" field (dist + web/dist).
+# This .npmignore exists so npm does NOT fall back to .gitignore, whose
+# `dist/` rule would otherwise strip the built artifacts we ship.
+node_modules
+src
+tsconfig.json
+*.log
+.DS_Store

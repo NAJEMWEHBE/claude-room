@@ -1,0 +1,8 @@
+# Present so npm does not consult web/.gitignore (whose `dist` rule would strip
+# web/dist). The root package.json "files" allowlist already limits what ships
+# from web/ to web/dist only.
+node_modules
+src
+mock
+public
+*.log

@@ -1,0 +1,42 @@
+{
+  "name": "claude-room",
+  "version": "0.1.0",
+  "description": "Standalone pixel diorama of your live Claude Code sessions — read-only, transcript-tail sourced, zero config touched.",
+  "type": "module",
+  "bin": {
+    "claude-room": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "web/dist"
+  ],
+  "scripts": {
+    "build:server": "tsc -p tsconfig.json",
+    "build:web": "npm --prefix web run build",
+    "build": "npm run build:server && npm run build:web",
+    "prepack": "npm run build",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "diorama",
+    "sessions",
+    "watcher"
+  ],
+  "author": "Nino",
+  "license": "MIT"
+}
