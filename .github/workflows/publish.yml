@@ -1,0 +1,33 @@
+name: Publish to npm
+
+# Trusted publishing (OIDC) — no tokens. Requires the "Trusted publisher"
+# form on npmjs.com to point at this repo + this workflow filename.
+# Note: npm cannot OIDC-publish a package's FIRST version (npm/cli#8544);
+# v0.1.0 goes up manually, this workflow covers every release after.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # trusted publishing needs npm >= 11.5.1
+      - run: npm install -g npm@latest
+      - run: npm ci
+      - run: npm --prefix web ci
+      - run: npm run typecheck
+      - run: npm --prefix web test
+      # prepack runs the full build (server tsc + web vite)
+      - run: npm publish
