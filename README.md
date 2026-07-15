@@ -1,14 +1,16 @@
 # claude-room
 
+[![npm](https://img.shields.io/npm/v/claude-room?color=ff9d4d)](https://www.npmjs.com/package/claude-room)
+[![node](https://img.shields.io/node/v/claude-room?color=46e6a4)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/claude-room?color=38a8ff)](./LICENSE)
+
 A live **pixel diorama of your Claude Code sessions**. Run one command and a
-little room opens in your browser: each running session is an orange pixel
-Claude at a workbench, subagent swarms gather in coloured clusters by job, and
-sprites walk between zones as work happens — reading, building, testing,
-researching — with beams, sparks, confetti on success and a shake on failure.
+little room opens in your browser: every running session is an orange pixel
+Claude at a bench, subagent swarms cluster by job in their own colours, and
+sprites walk between zones as the work happens — confetti when a job lands,
+a screen-shake when one fails.
 
-![screenshot placeholder — add a real-session GIF here](docs/claude-room.gif)
-
-> _Screenshot/GIF placeholder — drop a recording in `docs/` before publishing._
+![the room, live](https://raw.githubusercontent.com/NAJEMWEHBE/claude-room/master/docs/hero.png)
 
 ## Run it
 
@@ -16,8 +18,8 @@ researching — with beams, sparks, confetti on success and a shake on failure.
 npx claude-room
 ```
 
-That starts a local server, prints the URL, and opens the room in your default
-browser:
+That's the whole setup. It starts a local server, prints the URL, and opens
+the room in your default browser:
 
 ```
 claude-room — watching /home/you/.claude/projects
@@ -26,8 +28,30 @@ claude-room — watching /home/you/.claude/projects
   room   : http://127.0.0.1:8181/
 ```
 
-Open sessions appear within a couple of seconds. Leave it running on a second
-monitor while you work.
+Open sessions walk in through the gate within a couple of seconds. Leave it on
+a second monitor and watch your agents work.
+
+![sessions and subagents walking, finishing, failing](https://raw.githubusercontent.com/NAJEMWEHBE/claude-room/master/docs/claude-room.gif)
+
+## What you're looking at
+
+- **Orange sprites** — your main Claude Code sessions, labelled by project and
+  model. They walk to the bench of whatever tool they're using right now:
+  **TERMINAL** for shell commands, **WORKBENCH** for edits, **LIBRARY** for
+  reads, **ANTENNA** for web, **PLAN BOARD**, **SKILLS**, **PORTAL** — and back
+  to the **PODIUM** when you prompt them.
+- **Coloured sprites** — subagents, coloured by job:
+  ![#46e6a4](https://img.shields.io/badge/-builder-46e6a4) ![#a878ff](https://img.shields.io/badge/-scout-a878ff) ![#ff6b7d](https://img.shields.io/badge/-reviewer-ff6b7d) ![#ffc25a](https://img.shields.io/badge/-tester-ffc25a) ![#38a8ff](https://img.shields.io/badge/-researcher-38a8ff) ![#e7c66a](https://img.shields.io/badge/-architect-e7c66a) ![#38e8ff](https://img.shields.io/badge/-helper-38e8ff)
+- **Crowd chips (+N)** — when a bench overflows, extra bodies fold into one
+  honest per-zone counter.
+- **Toasts, confetti, shake** — a subagent finishing pops a ✓ toast and
+  confetti; a failure gets a ✗ toast and shakes the floor. Work sparks fly at
+  whichever bench is busy, and every model is readable at a glance under its
+  sprite.
+- **Status bar** — the last tool call streaming in, live/session counts.
+
+Everything renders on one canvas with a dirty-flag frame loop: a settled or
+hidden room draws **zero frames**.
 
 ### Options
 
