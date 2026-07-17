@@ -50,11 +50,14 @@ hidden room still draws zero frames). Judged on hi-res renders before publish.
 - [Build](tickets/T05-build-alive-anims.md) — SHIPPED in working tree (uncommitted): all
   anims live per spec, 36/36 tests, judged 3840px shots, Nino taste pass approved. Commit
   + publish belong to Release.
+- [Release](tickets/T06-release.md) — **claude-room 0.2.0 published to npm 2026-07-17**
+  (Nino-gated go). Commits fb38c82/a527183/6035b4d; GitHub release v0.2.0 → OIDC CI
+  publish, green; tarball verified. README anim story + hero/gif/social refreshed; mock
+  gained an idle `night-shift` session for the sleep path. **MAP COMPLETE — 6/6 closed.**
 
 ## Not yet specified
 
-- README / hero-gif / social-preview refresh scope for the release — depends on which anims
-  actually ship and how they demo.
+(nothing — map complete)
 
 ## Out of scope
 
