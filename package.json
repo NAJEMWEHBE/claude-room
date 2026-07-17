@@ -1,6 +1,6 @@
 {
   "name": "claude-room",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Standalone pixel diorama of your live Claude Code sessions — read-only, transcript-tail sourced, zero config touched.",
   "type": "module",
   "bin": {

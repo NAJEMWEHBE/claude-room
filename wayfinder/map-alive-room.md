@@ -54,6 +54,11 @@ hidden room still draws zero frames). Judged on hi-res renders before publish.
   (Nino-gated go). Commits fb38c82/a527183/6035b4d; GitHub release v0.2.0 → OIDC CI
   publish, green; tarball verified. README anim story + hero/gif/social refreshed; mock
   gained an idle `night-shift` session for the sleep path. **MAP COMPLETE — 6/6 closed.**
+- [0.2.1 review fixes](tickets/T07-021-review-fixes.md) — post-release two-axis code
+  review (7 findings): anim law unified into exported `spriteAnim()` (engine+shell drift
+  killed), T02 "beat, then walk" honored via deferred `wakeTo` routing, T03 terminal
+  screen flicker implemented (README claim now true), dead wiggle discriminant removed.
+  38/38 tests, hi-res verified. Shipped as **0.2.1**.
 
 ## Not yet specified
 
