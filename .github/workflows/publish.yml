@@ -28,6 +28,7 @@ jobs:
       - run: npm ci
       - run: npm --prefix web ci
       - run: npm run typecheck
+      - run: npm run test
       - run: npm --prefix web test
       # prepack runs the full build (server tsc + web vite)
       - run: npm publish
