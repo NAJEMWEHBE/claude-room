@@ -6,7 +6,7 @@
  * The crowd-saturation fixtures use the real backend job label
  * 'researcher' (homes to web, the tightest bot cap). */
 import { describe, it, expect } from 'vitest'
-import { RoomEngine, zoneBotCap, GATE_X, GATE_Y, GATE_STAGGER, ZONES, SESS_BODY, BOT_BODY, center, SLEEP_MS } from './roomEngine'
+import { RoomEngine, zoneBotCap, spriteAnim, GATE_X, GATE_Y, GATE_STAGGER, ZONES, SESS_BODY, BOT_BODY, center, SLEEP_MS, STARTLE_MS } from './roomEngine'
 import type { LiveAgent } from './roomEngine'
 
 const rng = () => 0.5 // jitter-free: (rng()-0.5) === 0
@@ -321,6 +321,45 @@ describe('zero-idle law — empty/hidden = 0 frames, occupied idles at ≤6fps',
     expect(e.step(DT, woke + 100).anim).toBe(true) // inside the 300ms startle window
     // startle alone is bounded: past 300ms, with a fresh event (not yet re-asleep) → anim off again
     expect(e.step(DT, woke + 400).anim).toBe(false)
+  })
+
+  it('T02 wake sequence: startle beat FIRST, walk only after the beat (0.2.1 review fix)', () => {
+    const e = new RoomEngine(rng)
+    e.syncRoster([session('aaaa1111', '')], T0) // tool '' routes to the PODIUM
+    run(e, 120) // settle at the podium
+    const s = e.sessions.get('aaaa1111')!
+    expect(s.zone).toBe('podium')
+    // a tool event catches the session asleep → beat armed, walk DEFERRED
+    const woke = T0 + SLEEP_MS + 5000
+    e.applyStreamEvent({ event: 'PreToolUse', tool: 'Edit', session: 'aaaa1111', detail: 'x.ts' }, woke)
+    expect(s.startleAt).toBe(woke)
+    expect(s.tweening).toBe(false) // NOT walking — the beat must render
+    expect(s.zone).toBe('podium') // still at the podium for the whole beat
+    expect(s.wakeTo).toEqual({ key: 'pc' }) // destination parked, not taken
+    // inside the beat: anim (the startle), no kinematics
+    const mid = e.step(DT, woke + 100)
+    expect(mid.anim).toBe(true)
+    expect(spriteAnim(s, woke + 100)).toBe('startle')
+    expect(s.tweening).toBe(false)
+    // beat over: step() releases the parked route — NOW it walks to the bench
+    const after = e.step(DT, woke + STARTLE_MS + 10)
+    expect(s.zone).toBe('pc')
+    expect(s.tweening).toBe(true)
+    expect(after.moving).toBe(true)
+    expect(s.wakeTo).toBeUndefined()
+  })
+
+  it('spriteAnim is the single law: work at a bench, sleep at the podium, nothing mid-walk', () => {
+    const e = new RoomEngine(rng)
+    e.syncRoster([session('aaaa1111', 'Edit'), session('bbbb2222', '')], T0) // pc + podium
+    const now = run(e, 120) // both settled
+    const worker = e.sessions.get('aaaa1111')!, idler = e.sessions.get('bbbb2222')!
+    expect(spriteAnim(worker, now)).toBe('work') // settled at the TERMINAL
+    expect(spriteAnim(idler, now)).toBeUndefined() // awake at the podium: nothing
+    expect(spriteAnim(idler, T0 + SLEEP_MS + 60_000)).toBe('sleep') // quiet past SLEEP_MS
+    e.applyStreamEvent({ event: 'PreToolUse', tool: 'Read', session: 'aaaa1111' }, now) // pc → books walk
+    expect(worker.tweening).toBe(true)
+    expect(spriteAnim(worker, now)).toBeUndefined() // mid-walk: never anim-eligible
   })
 
   it('breathe window keeps the floor awake right after arrival, then closes', () => {

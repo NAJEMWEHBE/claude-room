@@ -181,10 +181,31 @@ export interface Sprite {
   // a bounded STARTLE_MS beat. Both feed StepResult.anim only — never `moving` (kinematics-only).
   lastEventAt?: number
   startleAt?: number
+  wakeTo?: { key: string } // station to route to once the wake-startle beat completes — T02 ratified
+  // "beat, THEN walk": a tool event that wakes a sleeper must not start the walk mid-beat (0.2.1
+  // review fix; the enterTo pattern). step() releases it when the STARTLE_MS window elapses.
   // spawn-gate lifecycle (room-build-gate 2026-07-11). undefined = settled on the floor.
   phase?: 'entering' | 'departing'
   phaseT0?: number // entering: door-open ts. departing: dematerialize-start ts (set on gate arrival)
   enterTo?: { key: string } // station to route to once the entry walk-up completes
+}
+
+/** THE idle-anim law (T04/T05, single source of truth since 0.2.1): what — if anything — a
+ * sprite idle-animates RIGHT NOW. The engine's StepResult.anim aggregates this; the shell maps
+ * it to a gesture ('work' → type/hammer/wiggle by zone) and paints. One function, no mirror to
+ * drift. Rules: LIVE + settled (not walking/entering/departing) only; crowds never animate;
+ * startle > sleep (a wake resets lastEventAt, and the beat must win while it runs); sleep +
+ * startle are session-only (subagents never sleep — T02); any non-podium zone is work. */
+export type SpriteAnim = 'work' | 'sleep' | 'startle' | undefined
+export function spriteAnim(c: Sprite, now: number): SpriteAnim {
+  if (c.count !== undefined || c.status !== 'live') return undefined
+  if (c.tweening || c.phase !== undefined) return undefined
+  if (c.big) {
+    if (c.startleAt !== undefined && now - c.startleAt < STARTLE_MS) return 'startle'
+    if (c.zone === 'podium' && c.lastEventAt !== undefined && now - c.lastEventAt > SLEEP_MS) return 'sleep'
+  }
+  if (c.zone && c.zone !== 'podium') return 'work'
+  return undefined
 }
 
 /* everything visual the engine wants drawn, as data — the shell renders it */
@@ -228,6 +249,7 @@ export class RoomEngine {
     c.zone = key
     c.arriveFx = true
     c.phase = undefined // routing to a station ends any gate entry/exit phase
+    c.wakeTo = undefined // any explicit routing supersedes a pending wake-route
     this.glow[key] = now + GLOW_MS
     // Fan-out is now PER-ZONE, not global-slot (polish-1 HIGH). goTo re-lays the whole
     // occupancy of the target zone (and re-closes the gap in the zone the sprite left) so
@@ -245,12 +267,16 @@ export class RoomEngine {
   /** Register a session tool/prompt event: WAKE it with a bounded startle beat if it was asleep,
    * then reset the sleep timer. Sleep-eligibility is read BEFORE the reset — else the fresh
    * lastEventAt masks the very state that earns the startle. Sessions only (subagents never sleep,
-   * T02); a no-op for non-podium / already-awake / done sessions beyond bumping lastEventAt. */
-  private noteSessionEvent(c: Sprite, now: number): void {
+   * T02); a no-op for non-podium / already-awake / done sessions beyond bumping lastEventAt.
+   * Returns true while the sprite is inside a startle beat (just woken OR mid-beat from a prior
+   * wake) — the caller must then DEFER routing via wakeTo, never goTo, so the ratified T02
+   * sequence holds: beat, THEN walk. */
+  private noteSessionEvent(c: Sprite, now: number): boolean {
     if (c.big && c.status === 'live' && c.zone === 'podium' && c.lastEventAt !== undefined && now - c.lastEventAt > SLEEP_MS) {
       c.startleAt = now // this event woke a sleeper — the shell reads startleAt for the 300ms beat
     }
     c.lastEventAt = now
+    return c.startleAt !== undefined && now - c.startleAt < STARTLE_MS
   }
 
   /** Lay out every session sprite currently in `key` as a centred row that FITS the bench:
@@ -484,22 +510,35 @@ export class RoomEngine {
     const s = this.sessions.get(sid)
     const c = s && s.phase !== 'departing' ? s : undefined // a session on its way out the gate isn't re-routed
     if (e.event === 'UserPromptSubmit') {
-      if (c) { this.noteSessionEvent(c, now); this.lastTool[sid] = ''; this.goTo(c, 'podium', now); dirty = true } // wake-startle if asleep + reset sleep timer
+      if (c) {
+        const inBeat = this.noteSessionEvent(c, now) // wake-startle if asleep + reset sleep timer
+        this.lastTool[sid] = ''
+        if (inBeat) c.wakeTo = { key: 'podium' } // beat first — step() routes when it ends (T02)
+        else this.goTo(c, 'podium', now)
+        dirty = true
+      }
       return { fx, dirty, hud: 'You prompted · ' + (sid || '—') }
     }
     if (e.event !== 'PreToolUse') return { fx, dirty, hud }
     const key = zoneForTool(e.tool)
     if (c) {
-      this.noteSessionEvent(c, now) // wake-startle if this event caught the session asleep + reset the sleep timer
+      const inBeat = this.noteSessionEvent(c, now) // wake-startle if this event caught the session asleep + reset the sleep timer
       this.lastTool[sid] = e.tool || ''
-      this.goTo(c, key, now)
-      // work sparks only once the worker is AT the bench — a zone-changing event starts a
-      // walk (tweening), and sparking the destination before the sprite arrives reads as a
-      // glitch (polish-3). Arrival already pops via arriveFx; sparks resume on the next
-      // tool event after landing.
-      if (!c.tweening) {
-        const zc = center(ZONES[key] || ZONES.podium)
-        fx.push({ kind: 'emit', x: zc.x, y: zc.y - 2, col: (ZONES[key] || ZONES.podium).line, n: 6, speed: 0.08, life: 600, up: true })
+      if (inBeat) {
+        // T02 ratified sequence: Zzz pops + startle beat, THEN the walk to work. Routing now
+        // would set tweening and the beat could never render (0.2.1 review). No sparks either —
+        // the worker isn't at the bench.
+        c.wakeTo = { key }
+      } else {
+        this.goTo(c, key, now)
+        // work sparks only once the worker is AT the bench — a zone-changing event starts a
+        // walk (tweening), and sparking the destination before the sprite arrives reads as a
+        // glitch (polish-3). Arrival already pops via arriveFx; sparks resume on the next
+        // tool event after landing.
+        if (!c.tweening) {
+          const zc = center(ZONES[key] || ZONES.podium)
+          fx.push({ kind: 'emit', x: zc.x, y: zc.y - 2, col: (ZONES[key] || ZONES.podium).line, n: 6, speed: 0.08, life: 600, up: true })
+        }
       }
       dirty = true
     } else { this.glow[key] = now + GLOW_MS; dirty = true }
@@ -576,30 +615,29 @@ export class RoomEngine {
       c.x += dx * 0.12; c.y += dy * 0.12
       moving = true
     }
+    // release wake-held walkers: a startled sleeper routes to its bench only AFTER the
+    // STARTLE_MS beat has fully rendered (T02: beat, then walk). Departing sprites just
+    // drop the pending route.
+    for (const c of this.sessions.values()) {
+      if (c.wakeTo && (c.startleAt === undefined || now - c.startleAt >= STARTLE_MS)) {
+        const to = c.wakeTo
+        c.wakeTo = undefined
+        if (c.phase !== 'departing') this.goTo(c, to.key, now)
+      }
+    }
     for (const [id, c] of [...this.sessions]) if (walk(c)) this.sessions.delete(id)
     for (const [id, b] of [...this.bots]) if (walk(b)) this.bots.delete(id)
     for (const c of this.crowds.values()) follow(c)
 
-    // ---- idle-anim eligibility (T04). A SEPARATE signal from `moving` (kinematics only). True while
-    // any LIVE sprite is: (a) settled at a WORKING bench (podium/gate excluded) — sessions AND bots;
-    // (b) a session asleep at the podium (SLEEP_MS quiet); (c) a session inside its bounded STARTLE_MS
-    // wake beat. NEVER emits fx and never fires on a done/dimmed or empty floor, so the shell can
+    // ---- idle-anim eligibility (T04): step() is true while ANY live sprite has a spriteAnim().
+    // The per-sprite law itself lives in the exported spriteAnim() — the ONE source of truth the
+    // shell also renders from (0.2.1 review: the old private copy + shell mirror had already
+    // drifted). NEVER emits fx and never fires on a done/dimmed or empty floor, so the shell can
     // fall to zero frames by construction — the relabeled zero-idle law ("empty/hidden = 0 frames,
     // occupied idles at ≤6fps"). Crowds (+N chips) never animate.
     let anim = false
-    const animEligible = (c: Sprite): boolean => {
-      if (c.status !== 'live') return false
-      // (a) work-anim: at a bench, standing still, fully settled (not entering/departing/walking)
-      if (c.zone && c.zone !== 'podium' && !c.tweening && c.phase === undefined) return true
-      // (b)/(c) sleep + wake-startle are session-only (subagents never sleep — T02)
-      if (c.big) {
-        if (c.zone === 'podium' && c.lastEventAt !== undefined && now - c.lastEventAt > SLEEP_MS) return true
-        if (c.startleAt !== undefined && now - c.startleAt < STARTLE_MS) return true
-      }
-      return false
-    }
-    for (const c of this.sessions.values()) if (animEligible(c)) { anim = true; break }
-    if (!anim) for (const b of this.bots.values()) if (animEligible(b)) { anim = true; break }
+    for (const c of this.sessions.values()) if (spriteAnim(c, now)) { anim = true; break }
+    if (!anim) for (const b of this.bots.values()) if (spriteAnim(b, now)) { anim = true; break }
     return { moving, anim, fx }
   }
 

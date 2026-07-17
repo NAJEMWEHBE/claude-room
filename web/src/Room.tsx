@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useApi } from './api'
-import { RoomEngine, ZONES, ZONE_KEYS, zoneForTool, center, BOB_MS, SLEEP_MS, STARTLE_MS, ENTRY_MS, EXIT_MS, GATE_X } from './roomEngine'
+import { RoomEngine, ZONES, ZONE_KEYS, zoneForTool, center, spriteAnim, BOB_MS, STARTLE_MS, ENTRY_MS, EXIT_MS, GATE_X } from './roomEngine'
 import type { LiveAgent, FxEvent, Sprite, Zone } from './roomEngine'
 import './room.css'
 
@@ -319,38 +319,39 @@ function FloorPlan({ agents }: { agents: LiveAgent[] }) {
         }
       }
       const r = (c.big ? 2.2 : 1.6) * S * pScale
-      // ---- alive-room idle anims (T05): subtle procedural motion on LIVE, settled, non-crowd
-      // sprites, phased per-sprite so a full bench never moves in lockstep. This RENDER eligibility
-      // mirrors the engine's StepResult.anim law (work-gesture off podium / sleep at podium /
-      // startle wake) so a sprite only animates on the exact frames the engine kept the shell awake
-      // for; all visuals derive from `now`, so they read identically at the 6fps idle cadence and on
-      // any coincident full-rate (walk/glow) frame. NO FxEvents are ever emitted from here.
+      // ---- alive-room idle anims (T05): subtle procedural motion, phased per-sprite so a full
+      // bench never moves in lockstep. Eligibility comes from the engine's exported spriteAnim()
+      // — the SAME function StepResult.anim aggregates, so a sprite animates on exactly the frames
+      // the engine kept the shell awake for (0.2.1 review: the old hand-copied predicate here had
+      // drifted). The shell only maps 'work' to a zone gesture and paints. All visuals derive from
+      // `now`, so they read identically at the 6fps idle cadence and on any coincident full-rate
+      // (walk/glow) frame. NO FxEvents are ever emitted from here.
       const animTick = Math.floor(now / ANIM_FRAME_MS) + (hashId(c.id) % 7) // per-sprite phase offset
       let eyes: 'open' | 'closed' | 'wide' = 'open'
       let squash = 0
-      let anim: 'none' | 'type' | 'hammer' | 'wiggle' | 'sleep' | 'startle' = 'none'
-      if (c.count === undefined && c.status === 'live' && c.phase === undefined && !c.tweening) {
-        if (c.big && c.startleAt !== undefined && now - c.startleAt < STARTLE_MS) {
-          // startle wake (event-driven, bounded like the arrival bob): tiny hop + wide eyes + '!'
-          anim = 'startle'
-          const t = (now - c.startleAt) / STARTLE_MS
-          y -= Math.sin(t * Math.PI) * 0.6 * S
-          eyes = 'wide'
-        } else if (c.big && c.zone === 'podium' && c.lastEventAt !== undefined && now - c.lastEventAt > SLEEP_MS) {
-          // asleep at the podium: closed eyes + drifting Zs (drawn below)
-          anim = 'sleep'
-          eyes = 'closed'
-        } else if (c.zone && c.zone !== 'podium') {
-          if (c.zone === 'pc') { // TERMINAL typing: 7-on / 3-off burst rhythm + slight lean to bench
-            anim = 'type'
-            if (animTick % 10 < 7) x += (center(ZONES.pc).x >= c.x ? 1 : -1) * 0.15 * S
-          } else if (c.zone === 'bench') { // WORKBENCH hammer: raise·raise·peak·STRIKE·recover
-            anim = 'hammer'
-            if (animTick % 5 === 3) squash = 1 // body squash on the strike tick
-          } else { // every other work zone shares one generic subtle busy wiggle (~1px bob)
-            anim = 'wiggle'
-            y += (animTick % 2 === 0 ? 1 : -1) * 0.12 * S
-          }
+      // `anim` holds only the gestures the accessory painter below consumes; the generic busy
+      // wiggle is offset-only (no accessory), so it never needs a discriminant value.
+      let anim: 'type' | 'hammer' | 'sleep' | 'startle' | undefined
+      const a = spriteAnim(c, now)
+      if (a === 'startle') {
+        // startle wake (event-driven, bounded like the arrival bob): tiny hop + wide eyes + '!'
+        anim = 'startle'
+        const t = (now - c.startleAt!) / STARTLE_MS
+        y -= Math.sin(t * Math.PI) * 0.6 * S
+        eyes = 'wide'
+      } else if (a === 'sleep') {
+        // asleep at the podium: closed eyes + drifting Zs (drawn below)
+        anim = 'sleep'
+        eyes = 'closed'
+      } else if (a === 'work') {
+        if (c.zone === 'pc') { // TERMINAL typing: 7-on / 3-off burst rhythm + slight lean to bench
+          anim = 'type'
+          if (animTick % 10 < 7) x += (center(ZONES.pc).x >= c.x ? 1 : -1) * 0.15 * S
+        } else if (c.zone === 'bench') { // WORKBENCH hammer: raise·raise·peak·STRIKE·recover
+          anim = 'hammer'
+          if (animTick % 5 === 3) squash = 1 // body squash on the strike tick
+        } else { // every other work zone shares one generic subtle busy wiggle (~1px bob)
+          y += (animTick % 2 === 0 ? 1 : -1) * 0.12 * S
         }
       }
       drawBody(x, y, r, c.col, eyes, squash)
@@ -358,6 +359,13 @@ function FloorPlan({ agents }: { agents: LiveAgent[] }) {
       // part of the sprite paint, NEVER pushed as FxEvents — the ratified T04 contract. ----
       if (anim === 'type') {
         const typing = animTick % 10 < 7
+        // screen flicker (T03 ratified: "burst typing + flicker", was missing until 0.2.1): a small
+        // blue monitor above the head, alpha keystroke-gated exactly like the ratified prototype
+        // (anim-vocab.html) — bright on key ticks, dim between. Sits above the slot-badge line
+        // (y − r) so it clears the badge, the '!' and the Zs never co-occur with typing.
+        const key = typing && animTick % 2 === 0
+        ctx!.fillStyle = key ? 'rgba(56,168,255,.85)' : 'rgba(56,168,255,.45)'
+        ctx!.fillRect(x - r * 1.1, y - r * 2.4, r * 2.2, r * 0.7)
         // faint 1px keyboard hint anchors the hands' read at the ~27-37px body size (T05 discretion)
         ctx!.fillStyle = 'rgba(20,24,38,.9)'
         ctx!.fillRect(x - r * 0.6, y + r * 0.62, r * 1.2, Math.max(1 * dpr, r * 0.12))
