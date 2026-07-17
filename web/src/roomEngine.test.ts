@@ -6,7 +6,7 @@
  * The crowd-saturation fixtures use the real backend job label
  * 'researcher' (homes to web, the tightest bot cap). */
 import { describe, it, expect } from 'vitest'
-import { RoomEngine, zoneBotCap, GATE_X, GATE_Y, GATE_STAGGER, ZONES, SESS_BODY, BOT_BODY, center } from './roomEngine'
+import { RoomEngine, zoneBotCap, GATE_X, GATE_Y, GATE_STAGGER, ZONES, SESS_BODY, BOT_BODY, center, SLEEP_MS } from './roomEngine'
 import type { LiveAgent } from './roomEngine'
 
 const rng = () => 0.5 // jitter-free: (rng()-0.5) === 0
@@ -256,17 +256,71 @@ describe('crowd — per-ZONE +N (room-polish-crowd-saturation)', () => {
   })
 })
 
-describe('zero-idle law', () => {
-  it('settled floor: once tweens finish AND breathe elapses, step() draws nothing forever', () => {
+// relabeled zero-idle law (T04): EMPTY or HIDDEN = zero frames; an OCCUPIED floor idles its cheap
+// work/sleep anims at ≤6fps. `moving` stays kinematics-only; the NEW `anim` flag carries the idle
+// loops, and `fx` must stay [] on any anim-only frame (anim logic never emits particles).
+describe('zero-idle law — empty/hidden = 0 frames, occupied idles at ≤6fps', () => {
+  it('empty floor: step() returns {moving:false, anim:false, fx:[]} forever', () => {
+    const e = new RoomEngine(rng)
+    for (let i = 0; i < 10; i++) {
+      const r = e.step(DT, T0 + i * DT)
+      expect(r.moving).toBe(false)
+      expect(r.anim).toBe(false) // nothing to animate → truly zero frames
+      expect(r.fx).toEqual([])
+    }
+    expect(e.glowActive(T0 + 60_000)).toBe(false)
+  })
+
+  it('occupied settled floor: tweens/breathe finish (moving:false) but live benches idle-anim (anim:true), no fx', () => {
     const e = new RoomEngine(rng)
     e.syncRoster([session('aaaa1111'), kid('k1', 'aaaa1111')], T0)
     const now = run(e, 200) // walk everyone in + tweens done + breathe window elapsed
     for (let i = 0; i < 10; i++) {
       const r = e.step(DT, now + i * DT)
-      expect(r.moving).toBe(false) // truly zero frames
-      expect(r.fx).toEqual([])
+      expect(r.moving).toBe(false) // kinematics fully settled
+      expect(r.anim).toBe(true) // ...but the live session (LIBRARY) + bot (TERMINAL) keep idle loops
+      expect(r.fx).toEqual([]) // anim NEVER emits particles
     }
     expect(e.glowActive(now + 60_000)).toBe(false)
+  })
+
+  it('a floor of only done/dimmed sprites stays at zero frames (anim never fires for non-live)', () => {
+    const e = new RoomEngine(rng)
+    e.syncRoster([session('aaaa1111', 'Read', 'done'), kid('k1', 'aaaa1111', 'done')], T0)
+    const now = run(e, 200)
+    for (let i = 0; i < 10; i++) {
+      const r = e.step(DT, now + i * DT)
+      expect(r.moving).toBe(false)
+      expect(r.anim).toBe(false) // done → dimmed, no work gesture, no Zzz
+      expect(r.fx).toEqual([])
+    }
+  })
+
+  it('sleep: a live session goes quiet at the podium — anim off before 45s, on after; an event wakes it (startle) then bounded off', () => {
+    const e = new RoomEngine(rng)
+    e.syncRoster([session('aaaa1111', '')], T0) // tool '' routes to the PODIUM
+    run(e, 120) // enter the gate + route to the podium + settle (no events since creation)
+    const s = e.sessions.get('aaaa1111')!
+    expect(s.zone).toBe('podium')
+
+    // before SLEEP_MS of podium quiet: not asleep, nothing to animate at the podium
+    const pre = e.step(DT, T0 + SLEEP_MS - 1000)
+    expect(pre.moving).toBe(false)
+    expect(pre.anim).toBe(false)
+
+    // past SLEEP_MS quiet: asleep → anim true, still not "moving", still no fx
+    const asleep = e.step(DT, T0 + SLEEP_MS + 1000)
+    expect(asleep.moving).toBe(false)
+    expect(asleep.anim).toBe(true)
+    expect(asleep.fx).toEqual([])
+
+    // an event while asleep arms a bounded startle beat + resets the sleep timer
+    const woke = T0 + SLEEP_MS + 1000
+    e.applyStreamEvent({ event: 'UserPromptSubmit', session: 'aaaa1111' }, woke)
+    expect(s.startleAt).toBe(woke)
+    expect(e.step(DT, woke + 100).anim).toBe(true) // inside the 300ms startle window
+    // startle alone is bounded: past 300ms, with a fresh event (not yet re-asleep) → anim off again
+    expect(e.step(DT, woke + 400).anim).toBe(false)
   })
 
   it('breathe window keeps the floor awake right after arrival, then closes', () => {

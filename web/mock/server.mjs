@@ -8,12 +8,13 @@
  *    GET /api/live-agents  -> LiveAgents roster (changes over time)
  *    GET /api/stream       -> text/event-stream of EventLine JSON
  *
- *  Roster: 3 sessions —
+ *  Roster: 4 sessions —
  *    A  big-project     · opus-4.8  · LIVE  · 7 subagents:
  *         5 researchers → ANTENNA bench (cap 3) → 2 bodies + per-zone "+3" chip
  *         1 builder → TERMINAL, 1 tester → WORKBENCH
  *    B  claude-room     · sonnet-5  · LIVE  · 0 subagents
  *    C  brain           · opus-4.8  · DONE  · idle (dimmed to 55%)
+ *    D  night-shift     · sonnet-5  · LIVE  · idle, no SSE → sleeps at 45s (Zzz)
  *  Status timeline (cyclic, 20s): at phase 9s the builder flips live->done
  *  (toast ✓ + confetti); at 13s the tester flips live->failed (toast ✗ +
  *  shake + red burst); both revert next cycle so edges recur.
@@ -59,6 +60,11 @@ function roster() {
 
   // ---- Session C: brain, idle/done ----
   agents.push({ id: 'sess-C', kind: 'session', session: 'br000003', name: 'claude', job: '', detail: '', model: 'opus-4.8', status: 'done', age_s: Math.round(t), project: 'brain', tool: '' })
+
+  // ---- Session D: LIVE but idle at the podium, never touched by SSE ----
+  // exercises the alive-anims sleep path: engine spawns it with lastEventAt=now,
+  // so after SLEEP_MS (45s) of page-observed quiet it dozes off under drifting Zs
+  agents.push({ id: 'sess-D', kind: 'session', session: 'zz000004', name: 'claude', job: '', detail: '', model: 'sonnet-5', status: 'live', age_s: Math.round(t), project: 'night-shift', tool: '' })
 
   const live = agents.filter((a) => a.status === 'live').length
   return { agents, live, done_recent: 1, ts: Date.now() }

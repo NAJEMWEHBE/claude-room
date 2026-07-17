@@ -56,6 +56,12 @@ export const CLAUDE_ORANGE = '#ff9d4d'
 export const CROWD_COL = '#8892b0'
 export const GLOW_MS = 1500
 export const BOB_MS = 1400 // breathe-on-arrival window: time-bounded
+// ---- alive-room idle-anim windows (T02/T04 ratified). A live SESSION parked at the PODIUM with
+// no tool/prompt events for SLEEP_MS falls asleep (drifting Zs); any event wakes it with a bounded
+// STARTLE_MS beat. Both are engine STATE, surfaced through StepResult.anim — never `moving`, which
+// stays kinematics-only (the audit warned against overloading it, roomEngine.test.ts:87-103). ----
+export const SLEEP_MS = 45_000 // podium quiet before a live session sleeps
+export const STARTLE_MS = 300 // wake-beat window after a sleeping session receives an event
 
 // ---- spawn gate (ratified Airlock door, room-build-gate 2026-07-11). ONE door centred on
 // the bottom wall; sessions AND subagents enter + exit through it (kind stays legible by
@@ -170,6 +176,11 @@ export interface Sprite {
   // sprite's trail from co-walkers — a shared engine counter made even-count walkers
   // alternate parity, starving one trail and doubling the other.
   arrAt?: number // last arrival ts (drives the breathe window)
+  // alive-room idle anims (T05). lastEventAt: last tool/prompt event ts for a SESSION — the sleep
+  // timer (podium + SLEEP_MS quiet ⇒ asleep). startleAt: set when an event WAKES a sleeping session,
+  // a bounded STARTLE_MS beat. Both feed StepResult.anim only — never `moving` (kinematics-only).
+  lastEventAt?: number
+  startleAt?: number
   // spawn-gate lifecycle (room-build-gate 2026-07-11). undefined = settled on the floor.
   phase?: 'entering' | 'departing'
   phaseT0?: number // entering: door-open ts. departing: dematerialize-start ts (set on gate arrival)
@@ -194,7 +205,8 @@ export interface StreamResult {
   hud: string | null // HUD activity line, null = leave as-is
 }
 export interface StepResult {
-  moving: boolean
+  moving: boolean // kinematics only: any sprite entering/walking/departing/breathing
+  anim: boolean // idle-anim eligible (work gesture / sleep / startle) — a SEPARATE low-fps signal
   fx: FxEvent[]
 }
 
@@ -228,6 +240,17 @@ export class RoomEngine {
       this.packBots(key)
       if (oldZone && oldZone !== key) this.packBots(oldZone)
     }
+  }
+
+  /** Register a session tool/prompt event: WAKE it with a bounded startle beat if it was asleep,
+   * then reset the sleep timer. Sleep-eligibility is read BEFORE the reset — else the fresh
+   * lastEventAt masks the very state that earns the startle. Sessions only (subagents never sleep,
+   * T02); a no-op for non-podium / already-awake / done sessions beyond bumping lastEventAt. */
+  private noteSessionEvent(c: Sprite, now: number): void {
+    if (c.big && c.status === 'live' && c.zone === 'podium' && c.lastEventAt !== undefined && now - c.lastEventAt > SLEEP_MS) {
+      c.startleAt = now // this event woke a sleeper — the shell reads startleAt for the 300ms beat
+    }
+    c.lastEventAt = now
   }
 
   /** Lay out every session sprite currently in `key` as a centred row that FITS the bench:
@@ -338,19 +361,19 @@ export class RoomEngine {
       const tool = a.tool || ''
       let c = this.sessions.get(a.session)
       if (!c) {
-        c = { id: a.id, sid: a.session, col: CLAUDE_ORANGE, big: true, status: a.status, slot: i + 1, l1: trunc(a.project || a.name || 'claude', 16), l2: a.model || '', x: GATE_X, y: GATE_Y, tx: GATE_X, ty: GATE_Y, zone: '', arriveFx: false, done: false, born: now, speed: 0.85 + this.rng() * 0.4 }
+        c = { id: a.id, sid: a.session, col: CLAUDE_ORANGE, big: true, status: a.status, slot: i + 1, l1: trunc(a.project || a.name || 'claude', 16), l2: a.model || '', x: GATE_X, y: GATE_Y, tx: GATE_X, ty: GATE_Y, zone: '', arriveFx: false, done: false, born: now, speed: 0.85 + this.rng() * 0.4, lastEventAt: now }
         this.enterAtGate(c, zoneForTool(tool), now) // enter through the bottom-wall gate
         this.sessions.set(a.session, c)
         this.lastTool[a.session] = tool
         dirty = true
       } else {
-        if (c.phase === 'departing') { c.phaseT0 = undefined; this.goTo(c, zoneForTool(tool), now); dirty = true } // flap: an exiting session came back — route it home
+        if (c.phase === 'departing') { c.phaseT0 = undefined; this.goTo(c, zoneForTool(tool), now); c.lastEventAt = now; dirty = true } // flap: an exiting session came back — route it home (fresh activity, resets the sleep timer)
         if (c.status !== a.status) dirty = true // live<->done flips the idle dim
         c.status = a.status
         c.slot = i + 1
         c.l1 = trunc(a.project || a.name || 'claude', 16)
         c.l2 = a.model || ''
-        if (tool !== this.lastTool[a.session]) { this.lastTool[a.session] = tool; this.goTo(c, zoneForTool(tool), now); dirty = true } // '' -> podium: idle sprite walks home (PR #5 review)
+        if (tool !== this.lastTool[a.session]) { this.lastTool[a.session] = tool; this.goTo(c, zoneForTool(tool), now); c.lastEventAt = now; dirty = true } // '' -> podium: idle sprite walks home (PR #5 review). A tool change is activity → resets the sleep timer.
       }
     }
     // a session that left the roster walks out through the gate + dematerializes (step()
@@ -461,12 +484,13 @@ export class RoomEngine {
     const s = this.sessions.get(sid)
     const c = s && s.phase !== 'departing' ? s : undefined // a session on its way out the gate isn't re-routed
     if (e.event === 'UserPromptSubmit') {
-      if (c) { this.lastTool[sid] = ''; this.goTo(c, 'podium', now); dirty = true }
+      if (c) { this.noteSessionEvent(c, now); this.lastTool[sid] = ''; this.goTo(c, 'podium', now); dirty = true } // wake-startle if asleep + reset sleep timer
       return { fx, dirty, hud: 'You prompted · ' + (sid || '—') }
     }
     if (e.event !== 'PreToolUse') return { fx, dirty, hud }
     const key = zoneForTool(e.tool)
     if (c) {
+      this.noteSessionEvent(c, now) // wake-startle if this event caught the session asleep + reset the sleep timer
       this.lastTool[sid] = e.tool || ''
       this.goTo(c, key, now)
       // work sparks only once the worker is AT the bench — a zone-changing event starts a
@@ -488,9 +512,11 @@ export class RoomEngine {
    * organic walk (eased bézier along a bent waypoint); crowds lerp-follow their moving
    * parent anchor. Returns whether anything still needs drawing + landing/trail fx.
    *
-   * Zero-idle law: a fully-settled floor returns {moving:false, fx:[]} so the shell draws
-   * nothing — EXCEPT for the bounded breathe window after each arrival (moving stays true
-   * for BOB_MS so the shell can render the bob), which then elapses back to zero frames.
+   * Zero-idle law (relabeled, T04): an EMPTY or all-done floor returns {moving:false, anim:false,
+   * fx:[]} so the shell draws NOTHING — EXCEPT for the bounded breathe window after each arrival
+   * (moving stays true for BOB_MS so the shell can render the bob), which elapses back to zero.
+   * An OCCUPIED floor with live sprites at work benches / a sleeping session returns anim:true
+   * (moving still false) so the shell idles those cheap loops at ≤6fps — never fx from anim.
    *
    * `dtMs` = ms since last frame (from the shell's rAF); `now` = Date.now(), passed in. */
   step(dtMs: number, now: number): StepResult {
@@ -553,7 +579,28 @@ export class RoomEngine {
     for (const [id, c] of [...this.sessions]) if (walk(c)) this.sessions.delete(id)
     for (const [id, b] of [...this.bots]) if (walk(b)) this.bots.delete(id)
     for (const c of this.crowds.values()) follow(c)
-    return { moving, fx }
+
+    // ---- idle-anim eligibility (T04). A SEPARATE signal from `moving` (kinematics only). True while
+    // any LIVE sprite is: (a) settled at a WORKING bench (podium/gate excluded) — sessions AND bots;
+    // (b) a session asleep at the podium (SLEEP_MS quiet); (c) a session inside its bounded STARTLE_MS
+    // wake beat. NEVER emits fx and never fires on a done/dimmed or empty floor, so the shell can
+    // fall to zero frames by construction — the relabeled zero-idle law ("empty/hidden = 0 frames,
+    // occupied idles at ≤6fps"). Crowds (+N chips) never animate.
+    let anim = false
+    const animEligible = (c: Sprite): boolean => {
+      if (c.status !== 'live') return false
+      // (a) work-anim: at a bench, standing still, fully settled (not entering/departing/walking)
+      if (c.zone && c.zone !== 'podium' && !c.tweening && c.phase === undefined) return true
+      // (b)/(c) sleep + wake-startle are session-only (subagents never sleep — T02)
+      if (c.big) {
+        if (c.zone === 'podium' && c.lastEventAt !== undefined && now - c.lastEventAt > SLEEP_MS) return true
+        if (c.startleAt !== undefined && now - c.startleAt < STARTLE_MS) return true
+      }
+      return false
+    }
+    for (const c of this.sessions.values()) if (animEligible(c)) { anim = true; break }
+    if (!anim) for (const b of this.bots.values()) if (animEligible(b)) { anim = true; break }
+    return { moving, anim, fx }
   }
 
   /** True while any zone glow is still burning (shell keeps animating). */

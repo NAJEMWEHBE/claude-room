@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useApi } from './api'
-import { RoomEngine, ZONES, ZONE_KEYS, zoneForTool, BOB_MS, ENTRY_MS, EXIT_MS, GATE_X } from './roomEngine'
+import { RoomEngine, ZONES, ZONE_KEYS, zoneForTool, center, BOB_MS, SLEEP_MS, STARTLE_MS, ENTRY_MS, EXIT_MS, GATE_X } from './roomEngine'
 import type { LiveAgent, FxEvent, Sprite, Zone } from './roomEngine'
 import './room.css'
 
@@ -10,8 +10,9 @@ import './room.css'
  * in roomEngine.ts (extracted 2026-07-11, room-engine-lifecycle-fix).
  * The engine mounts ONCE and survives roster churn — the old idKey
  * re-init (every membership change respawned the whole floor) is gone.
- * Zero-idle law intact: dirty-flag rAF, ~30fps cap; a settled, hidden
- * or empty room draws ZERO frames.
+ * Zero-idle law (relabeled, T04): dirty-flag rAF, ~30fps cap for real
+ * motion; an EMPTY or HIDDEN room draws ZERO frames, an OCCUPIED room
+ * idles its cheap work/sleep anims at ≤6fps (three-tier draw gate below).
  *
  * Consumes GET /api/live-agents (3s poll) +
  * EventSource /api/stream, same-origin (the standalone watcher serves
@@ -28,6 +29,17 @@ const FALLBACK: LiveAgents = { agents: [], live: 0, done_recent: 0 }
 
 const IDLE_ALPHA = 0.55 // parked session sprite opacity (grill: dim idle)
 const GHOST_ALPHA = 0.25 // unfocused-session opacity while a focus is active
+
+// ---- alive-room idle-anim ticker (T04): fps locked 6 → one anim frame every ~167ms. The shell
+// draws work-gestures / sleep-Zs / startle at this cadence when nothing kinematic is happening. ----
+const ANIM_FRAME_MS = 167
+// cheap per-sprite phase offset from the sprite id (same rationale as the polish-2 per-sprite
+// walk-trail cadence) so a full bench never types / wiggles / drifts Zs in lockstep.
+function hashId(id: string): number {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (Math.imul(h, 31) + id.charCodeAt(i)) | 0
+  return Math.abs(h)
+}
 
 interface Particle { x: number; y: number; vx: number; vy: number; g: number; col: string; life: number; t: number; r: number; rect?: boolean }
 // (Beam removed, polish-3: the parent→child dispatch beam was retired with the spawn gate —
@@ -224,15 +236,28 @@ function FloorPlan({ agents }: { agents: LiveAgent[] }) {
       ctx!.restore()
     }
 
-    function drawBody(x: number, y: number, r: number, col: string) {
-      rrect(ctx!, x - r, y - r, r * 2, r * 2, r * 0.45)
+    // eyes/squash are alive-room anim knobs (T05): default 'open' + 0 squash keeps every existing
+    // caller (crowd bodies, normal sprites) pixel-identical. 'closed' = asleep, 'wide' = startle;
+    // squashY (0..1) lowers the body's top edge on a hammer strike, base stays planted.
+    function drawBody(x: number, y: number, r: number, col: string, eyes: 'open' | 'closed' | 'wide' = 'open', squashY = 0) {
+      const sq = squashY * r * 0.12
+      rrect(ctx!, x - r, y - r + sq, r * 2, r * 2 - sq, r * 0.45)
       ctx!.fillStyle = col; ctx!.fill()
       ctx!.lineWidth = 1.2 * dpr; ctx!.strokeStyle = 'rgba(0,0,0,.45)'; ctx!.stroke()
       ctx!.fillStyle = '#10131c'
       const er = r * 0.16
       const eo = r * 0.32
-      ctx!.fillRect(x - eo - er, y - er * 1.6, er * 2, er * 3)
-      ctx!.fillRect(x + eo - er, y - er * 1.6, er * 2, er * 3)
+      if (eyes === 'closed') { // asleep: two thin closed lines (T03 sleep look)
+        const h = Math.max(1 * dpr, r * 0.06)
+        ctx!.fillRect(x - eo - er, y + sq, er * 2, h)
+        ctx!.fillRect(x + eo - er, y + sq, er * 2, h)
+      } else if (eyes === 'wide') { // startle: wide-open eyes
+        ctx!.fillRect(x - eo - er * 1.2, y - er * 1.9 + sq, er * 2.4, er * 3.6)
+        ctx!.fillRect(x + eo - er * 1.2, y - er * 1.9 + sq, er * 2.4, er * 3.6)
+      } else {
+        ctx!.fillRect(x - eo - er, y - er * 1.6 + sq, er * 2, er * 3)
+        ctx!.fillRect(x + eo - er, y - er * 1.6 + sq, er * 2, er * 3)
+      }
     }
 
     // labels give way when a bench is packed (room-polish-crowd-saturation): at high density
@@ -294,7 +319,96 @@ function FloorPlan({ agents }: { agents: LiveAgent[] }) {
         }
       }
       const r = (c.big ? 2.2 : 1.6) * S * pScale
-      drawBody(x, y, r, c.col)
+      // ---- alive-room idle anims (T05): subtle procedural motion on LIVE, settled, non-crowd
+      // sprites, phased per-sprite so a full bench never moves in lockstep. This RENDER eligibility
+      // mirrors the engine's StepResult.anim law (work-gesture off podium / sleep at podium /
+      // startle wake) so a sprite only animates on the exact frames the engine kept the shell awake
+      // for; all visuals derive from `now`, so they read identically at the 6fps idle cadence and on
+      // any coincident full-rate (walk/glow) frame. NO FxEvents are ever emitted from here.
+      const animTick = Math.floor(now / ANIM_FRAME_MS) + (hashId(c.id) % 7) // per-sprite phase offset
+      let eyes: 'open' | 'closed' | 'wide' = 'open'
+      let squash = 0
+      let anim: 'none' | 'type' | 'hammer' | 'wiggle' | 'sleep' | 'startle' = 'none'
+      if (c.count === undefined && c.status === 'live' && c.phase === undefined && !c.tweening) {
+        if (c.big && c.startleAt !== undefined && now - c.startleAt < STARTLE_MS) {
+          // startle wake (event-driven, bounded like the arrival bob): tiny hop + wide eyes + '!'
+          anim = 'startle'
+          const t = (now - c.startleAt) / STARTLE_MS
+          y -= Math.sin(t * Math.PI) * 0.6 * S
+          eyes = 'wide'
+        } else if (c.big && c.zone === 'podium' && c.lastEventAt !== undefined && now - c.lastEventAt > SLEEP_MS) {
+          // asleep at the podium: closed eyes + drifting Zs (drawn below)
+          anim = 'sleep'
+          eyes = 'closed'
+        } else if (c.zone && c.zone !== 'podium') {
+          if (c.zone === 'pc') { // TERMINAL typing: 7-on / 3-off burst rhythm + slight lean to bench
+            anim = 'type'
+            if (animTick % 10 < 7) x += (center(ZONES.pc).x >= c.x ? 1 : -1) * 0.15 * S
+          } else if (c.zone === 'bench') { // WORKBENCH hammer: raise·raise·peak·STRIKE·recover
+            anim = 'hammer'
+            if (animTick % 5 === 3) squash = 1 // body squash on the strike tick
+          } else { // every other work zone shares one generic subtle busy wiggle (~1px bob)
+            anim = 'wiggle'
+            y += (animTick % 2 === 0 ? 1 : -1) * 0.12 * S
+          }
+        }
+      }
+      drawBody(x, y, r, c.col, eyes, squash)
+      // ---- anim accessories painted ON the sprite. The hammer sparks are drawn INLINE here as
+      // part of the sprite paint, NEVER pushed as FxEvents — the ratified T04 contract. ----
+      if (anim === 'type') {
+        const typing = animTick % 10 < 7
+        // faint 1px keyboard hint anchors the hands' read at the ~27-37px body size (T05 discretion)
+        ctx!.fillStyle = 'rgba(20,24,38,.9)'
+        ctx!.fillRect(x - r * 0.6, y + r * 0.62, r * 1.2, Math.max(1 * dpr, r * 0.12))
+        // two body-colored hands tapping the keyboard, alternating up/down while a burst is on
+        const tap = r * 0.16
+        const lDy = typing && animTick % 2 === 0 ? -tap : 0
+        const rDy = typing && animTick % 2 === 1 ? -tap : 0
+        const hw = r * 0.32, hh = r * 0.2, hy = y + r * 0.42
+        ctx!.fillStyle = c.col; ctx!.lineWidth = 1 * dpr; ctx!.strokeStyle = 'rgba(0,0,0,.45)'
+        ctx!.fillRect(x - r * 0.42, hy + lDy, hw, hh); ctx!.strokeRect(x - r * 0.42, hy + lDy, hw, hh)
+        ctx!.fillRect(x + r * 0.1, hy + rDy, hw, hh); ctx!.strokeRect(x + r * 0.1, hy + rDy, hw, hh)
+      } else if (anim === 'hammer') {
+        const p = animTick % 5
+        const ang = [-0.2, -0.7, -1.1, 0.35, 0.05][p] // raise·raise·peak·STRIKE·recover
+        const px = x + r * 0.55, py = y - r * 0.9 + squash * r * 0.12 // pivot at the body's top-right corner
+        ctx!.save(); ctx!.translate(px, py); ctx!.rotate(ang)
+        ctx!.fillStyle = '#8a6a3a'; ctx!.fillRect(-r * 0.08, -r * 1.05, r * 0.16, r * 1.05) // handle
+        ctx!.fillStyle = '#10131c'; ctx!.fillRect(-r * 0.34, -r * 1.35, r * 0.68, r * 0.4) // head
+        ctx!.restore()
+        if (p === 3) { // impact sparks — inline paint, NOT FxEvents (T04 contract)
+          ctx!.fillStyle = '#ffd9a8'
+          const ix = x + r * 0.9, iy = y - r * 1.35, s2 = Math.max(1.4 * dpr, r * 0.12)
+          ctx!.fillRect(ix, iy, s2, s2)
+          ctx!.fillRect(ix + r * 0.22, iy - r * 0.16, s2, s2)
+          ctx!.fillRect(ix - r * 0.16, iy - r * 0.22, s2, s2)
+        }
+      } else if (anim === 'startle') {
+        // '!' up-and-right of the head (clear of the top-left slot badge)
+        ctx!.fillStyle = '#ffd9a8'
+        ctx!.font = `bold ${Math.round(r * 0.7)}px ui-monospace, Consolas, monospace`
+        ctx!.textAlign = 'center'
+        ctx!.fillText('!', x + r * 0.6, y - r * 1.4)
+      } else if (anim === 'sleep') {
+        // drifting z/Z, derived deterministically from `now` (no per-sprite particle state to keep):
+        // one spawn ~every 1.2s, ~2.4s life, alternating sizes, rise + fade + gentle sway. Placed
+        // up-and-RIGHT of the head so they clear the top-left session slot badge (audit Q1).
+        const SPAWN = 1200, LIFE = 2400
+        const phase = hashId(c.id) % SPAWN
+        const kNow = Math.floor((now - phase) / SPAWN)
+        ctx!.textAlign = 'center'
+        for (let k = kNow; k > kNow - 2 && k >= 0; k--) { // ≤2 Zs alive at once (LIFE / SPAWN = 2)
+          const age = now - (k * SPAWN + phase)
+          if (age < 0 || age >= LIFE) continue
+          const prog = age / LIFE
+          const big = k % 2 === 0
+          const sway = Math.sin(age / 260) * r * 0.16
+          ctx!.fillStyle = `rgba(199,206,224,${(0.85 * (1 - prog)).toFixed(3)})`
+          ctx!.font = `${Math.round((big ? 0.72 : 0.5) * r)}px ui-monospace, Consolas, monospace`
+          ctx!.fillText(big ? 'Z' : 'z', x + r * 0.7 + sway, y - r * 1.3 - prog * r * 1.7)
+        }
+      }
       if (c.done) {
         const okc = c.status === 'failed' ? '#ff6b7d' : '#46e6a4'
         rrect(ctx!, x - r, y - r, r * 2, r * 2, r * 0.45)
@@ -504,6 +618,7 @@ function FloorPlan({ agents }: { agents: LiveAgent[] }) {
     // ---- dirty-flag rAF: draws only while something moves (idle = 0 frames) ----
     let raf = 0
     let last = 0
+    let lastAnimDraw = 0 // last idle-anim draw ts — throttles tier-2 (anim-only) frames to 6fps
     let lastRoster: LiveAgent[] | null = null
     function frame(t: number) {
       if (stopped) return
@@ -544,7 +659,12 @@ function FloorPlan({ agents }: { agents: LiveAgent[] }) {
       if (FX.shake > 0.1) fx = true
       if (engine.glowActive(now)) fx = true
       if (now - lastEvt > 15000) setDot(false)
-      if (stepped.moving || fx || dirty) { draw(now); dirty = false }
+      // three-tier draw gate (T04). Tier 1: real motion / fx / glow / external change → the existing
+      // ~30fps path (smooth walks). Tier 2: else idle-anim → draw throttled to 6fps. Tier 3: else
+      // (empty/all-done floor) → zero draws. The document.hidden guard at the top of frame() already
+      // skips every tier while the tab is hidden, so a hidden room stays at zero frames too.
+      if (stepped.moving || fx || dirty) { draw(now); dirty = false; lastAnimDraw = t }
+      else if (stepped.anim && t - lastAnimDraw >= ANIM_FRAME_MS) { draw(now); lastAnimDraw = t }
       // shake decays in the frame step (sim), not in draw() (render) — polish-5 seam.
       // After the draw so the first shake frame renders at full amplitude; cadence matches
       // the old per-draw decay because a live shake forces fx=true → draw every frame.

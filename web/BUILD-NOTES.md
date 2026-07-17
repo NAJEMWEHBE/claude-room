@@ -53,5 +53,5 @@ the proxy target to point dev at the real watcher instead.
 ## Commands
 
 - `npm run build` → `dist/` (tsc -b + vite build)
-- `npm test` → 33 vitest engine tests (31 engine-behavior tests +
-  2 claude-room kind-whitelist tests)
+- `npm test` → 36 vitest engine tests (engine behavior + kind whitelist +
+  alive-anim sleep/startle/ticker coverage)
