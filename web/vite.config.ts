@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -13,6 +14,16 @@ const API_TARGET = process.env.CR_API || 'http://localhost:8181'
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      // canonical Room module — git submodule at the repo root (room-reunify 2026-07-17);
+      // raw TS consumed straight from source, no packaging.
+      'the-room': fileURLToPath(new URL('../the-room/src/index.ts', import.meta.url)),
+    },
+    // the submodule checkout has no node_modules — its react imports must land on
+    // THIS app's react (one copy, hooks stay sane)
+    dedupe: ['react', 'react-dom'],
+  },
   server: {
     proxy: {
       '/api': {

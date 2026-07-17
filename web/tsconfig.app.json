@@ -16,6 +16,15 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* canonical Room module (git submodule, room-reunify 2026-07-17). The react
+       mappings exist for the SUBMODULE's sake: its checkout has no node_modules,
+       so react-type resolution from ../the-room/src must land on this app's types. */
+    "paths": {
+      "the-room": ["../the-room/src/index.ts"],
+      "react": ["./node_modules/@types/react"],
+      "react/jsx-runtime": ["./node_modules/@types/react/jsx-runtime"]
+    },
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
