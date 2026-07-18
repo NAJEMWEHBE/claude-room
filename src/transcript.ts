@@ -9,6 +9,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { PROJECTS_DIR } from './paths.js';
 import { jobType, prettyModel, projLabel } from './model.js';
+import { openSessions, type OpenSession } from './sessionRegistry.js';
 import type { LiveAgent } from './types.js';
 import type { SessionBand } from './bands.js';
 
@@ -236,9 +237,21 @@ export async function scanSubagents(now: number): Promise<LiveAgent[]> {
 }
 
 /** Main sessions = root-level projects/<proj>/<uuid>.jsonl touched recently.
- *  tool/action come from the folded live bands. */
-export async function scanSessions(now: number, bands: Map<string, SessionBand>): Promise<LiveAgent[]> {
+ *  tool/action come from the folded live bands.
+ *
+ *  Liveness is a JOIN against the harness's own session registry (openSessions),
+ *  not the old transcript-mtime guess: registered+pid-alive -> "live" no matter
+ *  how idle the transcript (an open-but-parked session stays honestly on the
+ *  floor); unregistered -> the process is GONE (exited, archived, or a finished
+ *  one-shot) -> "done" for a bounded linger, never "live". reg undefined loads
+ *  the registry; null (missing registry dir) falls back to mtime-only. */
+export async function scanSessions(
+  now: number,
+  bands: Map<string, SessionBand>,
+  reg?: Map<string, OpenSession> | null
+): Promise<LiveAgent[]> {
   const out: LiveAgent[] = [];
+  if (reg === undefined) reg = await openSessions();
   const projects = await safeReaddir(PROJECTS_DIR);
   for (const proj of projects) {
     if (!proj.isDirectory()) continue;
@@ -253,9 +266,21 @@ export async function scanSessions(now: number, bands: Map<string, SessionBand>)
         continue;
       }
       const age = now - st.mtimeMs / 1000;
-      if (age > SESSION_LIVE_S + SESSION_LINGER_S) continue;
-
       const sid = ent.name.replace(/\.jsonl$/, '').slice(0, 8);
+
+      let status: string;
+      if (reg !== null) {
+        const isOpen = reg.has(sid);
+        // open sessions stay regardless of transcript idle (parked = still there);
+        // a session with no live process is DONE at most SESSION_LINGER_S, then gone.
+        if (!isOpen && age > SESSION_LINGER_S) continue;
+        status = isOpen ? 'live' : 'done';
+      } else {
+        // legacy mtime-only heuristic (no registry on this harness)
+        if (age > SESSION_LIVE_S + SESSION_LINGER_S) continue;
+        status = age <= SESSION_LIVE_S ? 'live' : 'done';
+      }
+
       const { model, cwd } = await transcriptMeta(file, st.mtimeMs);
       const band = bands.get(sid);
       const last = band?.last;
@@ -277,13 +302,15 @@ export async function scanSessions(now: number, bands: Map<string, SessionBand>)
         detail: action.slice(0, 120),
         model,
         tool,
-        status: age <= SESSION_LIVE_S ? 'live' : 'done',
+        status,
         age_s: Math.floor(age),
       });
     }
   }
-  out.sort((a, b) => a.age_s - b.age_s);
+  // live-first, then freshest: a burst of just-finished one-shots must never push
+  // a real open session off the capped roster (the displacement bug this fix closes).
+  out.sort((a, b) => (a.status === 'live' ? 0 : 1) - (b.status === 'live' ? 0 : 1) || a.age_s - b.age_s);
   return out.slice(0, 8);
 }
 
-export { WRITE_TOOLS, LIVE_S, SESSION_LIVE_S };
+export { WRITE_TOOLS, LIVE_S, SESSION_LIVE_S, SESSION_LINGER_S };
